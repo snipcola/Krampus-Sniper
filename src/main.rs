@@ -104,6 +104,7 @@ fn get_potential_keys(text: &str, key_length: usize) -> Vec<String> {
 
     return text
         .split_whitespace()
+        .filter(|word| !word.starts_with("https:") && !word.starts_with("http:"))
         .map(|word| regex.replace_all(word, "").to_string())
         .filter(|word| word.len() == key_length)
         .collect();
