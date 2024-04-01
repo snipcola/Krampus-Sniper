@@ -3,8 +3,8 @@
 This was created as a proof-of-concept, your usage is your own responsibility. The following instructions are vague on purpose, to minimize the chances of this tool being misused.
 
 ### Requirements
-- Cargo (Rustup)
-- Tesseract OCR
+- Cargo (Rustup), For compilation
+- Tesseract OCR, For image sniping
 
 ### Instructions
 Open up ``config.json.example`` in a text editor or IDE.
