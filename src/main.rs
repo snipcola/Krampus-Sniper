@@ -22,10 +22,9 @@ use std::io::Read;
 use std::error::Error;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, from_str};
+use serde_json::{json, from_str, Value, Map};
 
 use reqwest::header;
-use reqwest::multipart::Form;
 
 // Structs
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,54 +46,86 @@ impl Config {
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct ResponseData {
-    status: u16,
-    data: Value
-}
-
 // Functions
 fn timestamp() -> String {
     let now = Local::now();
     return now.format("%H:%M:%S").to_string();
 }
 
-async fn get_redeem_data(config: &Config, key: &str) -> Result<ResponseData, Box<dyn std::error::Error>> {
-    let form = Form::new().text("key", key.to_string());
-    let cookie = format!("_db_ses=Bearer%20{}", config.krampus_auth);
+async fn get_redeem_data(config: &Config, keys: Vec<String>) -> Result<Value, Box<dyn std::error::Error>> {
+    let mut json_map = Map::new();
+
+    for (index, key) in keys.iter().enumerate() {
+        json_map.insert(index.to_string(), json!({ "json": key }));
+    }
+
     let client = reqwest::Client::new();
     let response = client
-        .post("https://loader.live/dashboard/licenses?/claim")
+        .post(format!("https://api.acedia.gg/trpc/license.claim?batch={}", keys.len()))
         .header(header::USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36")
-        .header(header::REFERER, "https://loader.live/dashboard/licenses")
-        .header(header::ORIGIN, "https://loader.live")
-        .header(header::COOKIE, cookie)
-        .multipart(form)
+        .header(header::AUTHORIZATION, format!("Bearer {}", config.krampus_auth))
+        .header(header::REFERER, "https://acedia.gg/dashboard/licenses")
+        .header(header::ORIGIN, "https://acedia.gg")
+        .json(&json_map)
         .send()
         .await?;
 
-    if response.status().is_success() {
-        let data: ResponseData = response.json().await?;
-        return Ok(data);
-    } else {
-        return Err("Request Failed".into());
-    }
+    let data = response.json().await?;
+    return Ok(data);
 }
 
-async fn redeem_key(config: &Config, key: &str) {
-    println!("{} Redeeming Key: {}", format!("[KEY, {}]", timestamp()).blue(), key.bold());
-    let data = get_redeem_data(&config, &key).await;
-                
+async fn redeem_keys(config: &Config, keys: Vec<String>) {
+    // TODO: Wait for acedia.gg API to support batched requests, and then send all keys at once.
+
+    if keys.len() < 1 {
+        return;
+    }
+
+    for key in keys.iter() {
+        println!("{} Redeeming Key: {}", format!("[{}, KEY]", timestamp()).blue(), key.bold());
+    }
+
+    let data = get_redeem_data(&config, keys.clone()).await;
+
     match data {
-        Ok(data) => {
-            if data.status == 200 {
-                println!("{} Redeemed key: {}, {}", format!("[KEY, {}]", timestamp()).green(), key.bold(), data.data.to_string().bold());
-            } else {
-                println!("{} Failed to redeem key: {}, {}", format!("[KEY, {}]", timestamp()).red(), key.bold(), data.data.to_string().bold());
+        Ok(json_obj) => {
+            for (index, key) in keys.iter().enumerate() {
+                let data: Option<(bool, String)> = json_obj.get(index).and_then(|data| {
+                    data.get("error").and_then(|error| {
+                        error.get("json").and_then(|json| {
+                            json.get("message").map(|message| (false, message.to_string()))
+                        })
+                    }).or_else(|| {
+                        data.get("result").and_then(|result| {
+                            result.get("data").and_then(|data| {
+                                data.get("json").and_then(|json| {
+                                    json.get("status").map(|status| (true, status.to_string()))
+                                })
+                            })
+                        })
+                    })
+                });
+
+                match data {
+                    Some((success, message)) => {
+                        if success {
+                            println!("{} Redeemed Key: {}, {}", format!("[{}, KEY]", timestamp()).green(), key.bold(), message.bold());
+                        } else {
+                            println!("{} Failed to Redeem Key: {}, {}", format!("[{}, KEY]", timestamp()).red(), key.bold(), message.bold());
+                        }
+                    },
+                    None => {
+                        println!("{} Failed to Redeem Key: {}, {}", format!("[{}, KEY]", timestamp()).red(), key.bold(), "Invalid Response".bold());
+                    }
+                }
             }
         },
         Err(error) => {
-            println!("{} Failed to redeem key: {}, {}", format!("[KEY, {}]", timestamp()).red(), key.bold(), format!("{:?}", error).bold());
+            let time = timestamp();
+
+            for key in keys.iter() {
+                println!("{} Failed to redeem key: {}, {}", format!("[{}, KEY]", time).red(), key.bold(), format!("{:?}", error).bold());
+            }
         }
     }
 }
@@ -134,20 +165,26 @@ async fn handle_attachment(config: &Config, attachment: Attachment) {
         Err(_) => return
     };
 
-    for key in get_potential_keys(&text, config.key_length) {
+    let keys = get_potential_keys(&text, config.key_length);
+    
+    for key in keys {
         let config_clone = config.clone();
+        
         spawn(async move {
-            redeem_key(&config_clone, &key).await;
+            redeem_keys(&config_clone, vec![key]).await;
         });
     }
 }
 
 async fn handle_message(config: &Config, message: Message, guild_id: i64) {
     if config.server_ids.contains(&guild_id) {
-        for key in get_potential_keys(&message.content, config.key_length) {
+        let keys = get_potential_keys(&message.content, config.key_length);
+        
+        for key in keys {
             let config_clone = config.clone();
+
             spawn(async move {
-                redeem_key(&config_clone, &key).await;
+                redeem_keys(&config_clone, vec![key]).await;
             });
         }
 
@@ -191,7 +228,7 @@ async fn main() {
     let config = match Config::from_file("config.json") {
         Ok(config) => config,
         Err(error) => {
-            println!("{} Failed to read config: {}", "[ERROR]".red(), format!("{:?}", error).bold());
+            println!("{} Failed to Read Config: {}", "[ERROR]".red(), format!("{:?}", error).bold());
             return;
         }
     };
@@ -200,9 +237,9 @@ async fn main() {
     let mut client = Client::builder(config.discord_token)
         .event_handler(handler)
         .await
-        .expect(&format!("{} Failed to create client.", "[ERROR]".red()));
+        .expect(&format!("{} Failed to Create Client.", "[ERROR]".red()));
 
     if let Err(error) = client.start().await {
-        println!("{} Failed to start client: {}", "[ERROR]".red(), format!("{:?}", error).bold());
+        println!("{} Failed to Start Client: {}", "[ERROR]".red(), format!("{:?}", error).bold());
     }
 }
