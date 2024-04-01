@@ -7,7 +7,7 @@
 use colored::{Colorize, control};
 use chrono::Local;
 
-use tokio::spawn;
+use tokio::{spawn, time::sleep};
 use regex::Regex;
 
 use image::load_from_memory;
@@ -19,18 +19,33 @@ use serenity::async_trait;
 
 use std::fs::File;
 use std::io::Read;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use std::error::Error;
+use std::process::exit;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, from_str, Value, Map};
 
 use reqwest::header;
+use lazy_static::lazy_static;
+
+// Globals
+lazy_static! {
+    static ref JWT_TOKEN: Arc<Mutex<String>> = Arc::new(Mutex::new("".to_string()));
+}
 
 // Structs
 #[derive(Debug, Clone, Serialize, Deserialize)]
+struct Credentials {
+    login: String,
+    password: String
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct Config {
     discord_token: String,
-    krampus_auth: String,
+    krampus_credentials: Credentials,
     server_ids: Vec<i64>,
     key_length: usize
 }
@@ -52,7 +67,83 @@ fn timestamp() -> String {
     return now.format("%H:%M:%S").to_string();
 }
 
-async fn get_redeem_data(config: &Config, keys: Vec<String>) -> Result<Value, Box<dyn std::error::Error>> {
+async fn get_login_data(config: &Config) -> Result<(Value, String), Box<dyn std::error::Error>> {
+    let mut json_map = Map::new();
+    json_map.insert("0".to_string(), json!({
+        "json": {
+            "emailOrUsername": config.krampus_credentials.login,
+            "password": config.krampus_credentials.password
+        }
+    }));
+    
+    let client = reqwest::Client::new();
+    let response = client
+        .post("https://api.acedia.gg/trpc/auth.logIn?batch=1")
+        .header(header::USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36")
+        .header(header::REFERER, "https://acedia.gg")
+        .header(header::ORIGIN, "https://acedia.gg")
+        .json(&json_map)
+        .send()
+        .await?;
+
+    let headers = response.headers().clone();
+    let cookies = match headers.get(header::SET_COOKIE) {
+        Some(data) => match data.to_str() {
+            Ok(cookie_string) => cookie_string.split(";")
+                .map(|cookie| {
+                    let parts: Vec<&str> = cookie.split("=").collect();
+        
+                    if parts.len() == 2 {
+                        return (parts[0].trim(), parts[1].trim());
+                    } else {
+                        return ("", "");
+                    }
+                })
+                .filter(|(key, _)| !key.is_empty())
+                .collect(),
+            Err(_) => vec![]
+        },
+        None => vec![]
+    };
+    
+    let data: Value = response.json().await?;
+    let cookie = cookies.iter()
+        .find(|(key, _)| key == &"_session")
+        .map(|(_, value)| value.to_string())
+        .unwrap_or_else(|| "".to_string());
+
+    return Ok((data.get(0).unwrap().to_owned(), cookie));
+}
+
+async fn login(config: &Config) -> Option<String> {
+    let (data, cookie) = match get_login_data(config).await {
+        Ok(response) => response,
+        Err(error) => return Some(format!("{:?}", error))
+    };
+
+    let data: Option<(bool, String)> = data.get("error").and_then(|error| {
+        error.get("json").and_then(|json| {
+            json.get("message").map(|message| (false, message.to_string()))
+        })
+    }).or_else(|| {
+        data.get("result").and_then(|_| Some((true, "".to_string())))
+    });
+
+    match data {
+        Some((success, message)) => {
+            if success {
+                *JWT_TOKEN.lock().unwrap() = cookie;
+                return None;
+            } else {
+                return Some(message);
+            }
+        },
+        None => return Some("Invalid Response".to_string())
+    }
+}
+
+async fn get_redeem_data(keys: Vec<String>) -> Result<Value, Box<dyn std::error::Error>> {
+    let jwt_token = JWT_TOKEN.lock().unwrap().clone();
     let mut json_map = Map::new();
 
     for (index, key) in keys.iter().enumerate() {
@@ -63,7 +154,7 @@ async fn get_redeem_data(config: &Config, keys: Vec<String>) -> Result<Value, Bo
     let response = client
         .post(format!("https://api.acedia.gg/trpc/license.claim?batch={}", keys.len()))
         .header(header::USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36")
-        .header(header::AUTHORIZATION, format!("Bearer {}", config.krampus_auth))
+        .header(header::AUTHORIZATION, format!("Bearer {}", jwt_token))
         .header(header::REFERER, "https://acedia.gg/dashboard/licenses")
         .header(header::ORIGIN, "https://acedia.gg")
         .json(&json_map)
@@ -74,18 +165,16 @@ async fn get_redeem_data(config: &Config, keys: Vec<String>) -> Result<Value, Bo
     return Ok(data);
 }
 
-async fn redeem_keys(config: &Config, keys: Vec<String>) {
-    // TODO: Wait for acedia.gg API to support batched requests, and then send all keys at once.
-
+async fn redeem_keys(keys: Vec<String>) {
     if keys.len() < 1 {
         return;
     }
 
     for key in keys.iter() {
-        println!("{} Redeeming Key: {}", format!("[{}, KEY]", timestamp()).blue(), key.bold());
+        println!("{} Redeeming Key: {}", format!("[{}, KEY]", timestamp()).cyan(), key.bold());
     }
 
-    let data = get_redeem_data(&config, keys.clone()).await;
+    let data = get_redeem_data(keys.clone()).await;
 
     match data {
         Ok(json_obj) => {
@@ -141,7 +230,7 @@ fn get_potential_keys(text: &str, key_length: usize) -> Vec<String> {
         .collect();
 }
 
-async fn handle_attachment(config: &Config, attachment: Attachment) {
+async fn handle_attachment(key_length: usize, attachment: Attachment) {
     let response = match reqwest::get(attachment.url).await {
         Ok(response) => response,
         Err(_) => return
@@ -165,13 +254,11 @@ async fn handle_attachment(config: &Config, attachment: Attachment) {
         Err(_) => return
     };
 
-    let keys = get_potential_keys(&text, config.key_length);
+    let keys = get_potential_keys(&text, key_length);
     
-    for key in keys {
-        let config_clone = config.clone();
-        
+    for key in keys {        
         spawn(async move {
-            redeem_keys(&config_clone, vec![key]).await;
+            redeem_keys(vec![key]).await;
         });
     }
 }
@@ -181,17 +268,16 @@ async fn handle_message(config: &Config, message: Message, guild_id: i64) {
         let keys = get_potential_keys(&message.content, config.key_length);
         
         for key in keys {
-            let config_clone = config.clone();
-
             spawn(async move {
-                redeem_keys(&config_clone, vec![key]).await;
+                redeem_keys(vec![key]).await;
             });
         }
 
+        let key_length = config.key_length;
+
         for attachment in message.attachments {
-            let config_clone = config.clone();
             spawn(async move {
-                handle_attachment(&config_clone, attachment).await;
+                handle_attachment(key_length, attachment).await;
             });
         }
     }
@@ -232,6 +318,25 @@ async fn main() {
             return;
         }
     };
+
+
+    let config_clone = config.clone();
+
+    spawn(async move {
+        async fn attempt_login(config: &Config) {
+            let login_response = login(&config).await;
+            
+            if login_response.is_some() {
+                println!("{} Failed to Login: {}", "[ERROR]".red(), login_response.unwrap().bold());
+                exit(1);
+            }
+        }
+
+        loop {
+            attempt_login(&config_clone).await;
+            sleep(Duration::from_secs(300)).await;
+        }
+    });
         
     let handler = Handler::new(config.clone());
     let mut client = Client::builder(config.discord_token)

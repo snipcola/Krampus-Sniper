@@ -1,6 +1,9 @@
 {
     "discord_token": "ABCEDFGHIJKMNOPQRSTUVWXYZ",
-    "krampus_auth": "ABCEDFGHIJKMNOPQRSTUVWXYZ",
+    "krampus_credentials": {
+        "login": "ABCEDFGHIJKMNOPQRSTUVWXYZ",
+        "password": "ABCEDFGHIJKMNOPQRSTUVWXYZ"
+    },
     "server_ids": [123456789],
     "key_length": 20
 }

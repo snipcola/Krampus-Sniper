@@ -12,7 +12,8 @@ serde_json = "1.0.115"
 reqwest = { version = "0.12.2", features = ["json"] }
 serenity = { git = "https://github.com/nshout/serenity-self", branch = "current" }
 tokio = { version = "1.37.0", features = ["full"] }
-chrono = "0.4.37"
 rusty-tesseract = "1.1.10"
+lazy_static = "1.4.0"
+chrono = "0.4.37"
 image = "0.25.1"
 regex = "1.10.4"
