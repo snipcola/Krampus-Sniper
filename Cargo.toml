@@ -1,0 +1,15 @@
+[package]
+name = "krampus-sniper"
+version = "0.0.1"
+authors = ["Snipcola"]
+license = "MIT"
+edition = "2021"
+
+[dependencies]
+colored = "2.1.0"
+serde = "1.0.197"
+serde_json = "1.0.115"
+reqwest = { version = "0.12.2", features = ["multipart", "json"] }
+serenity = { git = "https://github.com/nshout/serenity-self", branch = "current" }
+tokio = { version = "1.37.0", features = ["full"] }
+chrono = "0.4.37"
