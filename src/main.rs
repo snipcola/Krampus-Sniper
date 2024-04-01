@@ -4,7 +4,7 @@
 #![allow(non_snake_case, non_upper_case_globals)]
 
 // Program
-use colored::Colorize;
+use colored::{Colorize, control};
 use chrono::Local;
 
 use tokio::spawn;
@@ -185,6 +185,8 @@ impl EventHandler for Handler {
 // Main
 #[tokio::main]
 async fn main() {
+    control::set_virtual_terminal(true).ok();
+
     let config = match Config::from_file("config.json") {
         Ok(config) => config,
         Err(error) => {
