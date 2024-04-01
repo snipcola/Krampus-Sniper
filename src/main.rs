@@ -5,11 +5,16 @@
 
 // Program
 use colored::Colorize;
-use tokio::spawn;
 use chrono::Local;
 
+use tokio::spawn;
+use regex::Regex;
+
+use image::load_from_memory;
+use rusty_tesseract::{image_to_string, Args, Image};
+
 use serenity::prelude::*;
-use serenity::model::channel::Message;
+use serenity::model::channel::{Message, Attachment};
 use serenity::async_trait;
 
 use std::fs::File;
@@ -54,7 +59,7 @@ fn timestamp() -> String {
     return now.format("%H:%M:%S").to_string();
 }
 
-async fn redeem_key(config: &Config, key: &str) -> Result<ResponseData, Box<dyn std::error::Error>> {
+async fn get_redeem_data(config: &Config, key: &str) -> Result<ResponseData, Box<dyn std::error::Error>> {
     let form = Form::new().text("key", key.to_string());
     let cookie = format!("_db_ses=Bearer%20{}", config.krampus_auth);
     let client = reqwest::Client::new();
@@ -76,33 +81,79 @@ async fn redeem_key(config: &Config, key: &str) -> Result<ResponseData, Box<dyn 
     }
 }
 
+async fn redeem_key(config: &Config, key: &str) {
+    println!("{} Redeeming Key: {}", format!("[KEY, {}]", timestamp()).blue(), key.bold());
+    let data = get_redeem_data(&config, &key).await;
+                
+    match data {
+        Ok(data) => {
+            if data.status == 200 {
+                println!("{} Redeemed key: {}, {}", format!("[KEY, {}]", timestamp()).green(), key.bold(), data.data.to_string().bold());
+            } else {
+                println!("{} Failed to redeem key: {}, {}", format!("[KEY, {}]", timestamp()).red(), key.bold(), data.data.to_string().bold());
+            }
+        },
+        Err(error) => {
+            println!("{} Failed to redeem key: {}, {}", format!("[KEY, {}]", timestamp()).red(), key.bold(), format!("{:?}", error).bold());
+        }
+    }
+}
+
+fn get_potential_keys(text: &str, key_length: usize) -> Vec<String> {
+    let regex = Regex::new(r"[^a-zA-Z0-9]").unwrap();
+
+    return text
+        .split_whitespace()
+        .map(|word| regex.replace_all(word, "").to_string())
+        .filter(|word| word.len() == key_length)
+        .collect();
+}
+
+async fn handle_attachment(config: &Config, attachment: Attachment) {
+    let response = match reqwest::get(attachment.url).await {
+        Ok(response) => response,
+        Err(_) => return
+    };
+
+    let data = match response.bytes().await {
+        Ok(data) => data,
+        Err(_) => return
+    };
+
+    let image = match load_from_memory(&data) {
+        Ok(image) => match Image::from_dynamic_image(&image) {
+            Ok(image) => image,
+            Err(_) => return
+        },
+        Err(_) => return
+    };
+
+    let text = match image_to_string(&image, &Args::default()) {
+        Ok(text) => text,
+        Err(_) => return
+    };
+
+    for key in get_potential_keys(&text, config.key_length) {
+        let config_clone = config.clone();
+        spawn(async move {
+            redeem_key(&config_clone, &key).await;
+        });
+    }
+}
+
 async fn handle_message(config: &Config, message: Message, guild_id: i64) {
     if config.server_ids.contains(&guild_id) {
-        let potential_keys: Vec<String> = message.content
-            .split_whitespace()
-            .filter(| word | word.len() == config.key_length)
-            .map(| word | word.to_string())
-            .collect();
-
-        for key in potential_keys {
-            println!("{} Redeeming Key: {}", format!("[KEY, {}]", timestamp()).blue(), key.bold());
+        for key in get_potential_keys(&message.content, config.key_length) {
             let config_clone = config.clone();
-
             spawn(async move {
-                let data = redeem_key(&config_clone, &key).await;
-                
-                match data {
-                    Ok(data) => {
-                        if data.status == 200 {
-                            println!("{} Redeemed key: {}, {}", format!("[KEY, {}]", timestamp()).green(), key.bold(), data.data.to_string().bold());
-                        } else {
-                            println!("{} Failed to redeem key: {}, {}", format!("[KEY, {}]", timestamp()).red(), key.bold(), data.data.to_string().bold());
-                        }
-                    },
-                    Err(error) => {
-                        println!("{} Failed to redeem key: {}, {}", format!("[KEY, {}]", timestamp()).red(), key.bold(), format!("{:?}", error).bold());
-                    }
-                }
+                redeem_key(&config_clone, &key).await;
+            });
+        }
+
+        for attachment in message.attachments {
+            let config_clone = config.clone();
+            spawn(async move {
+                handle_attachment(&config_clone, attachment).await;
             });
         }
     }
