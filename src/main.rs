@@ -18,7 +18,7 @@ use serenity::model::channel::{Message, Attachment};
 use serenity::async_trait;
 
 use std::fs::File;
-use std::io::Read;
+use std::io::{stdin, Read};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::error::Error;
@@ -47,7 +47,7 @@ struct Config {
     discord_token: String,
     krampus_credentials: Credentials,
     server_ids: Vec<i64>,
-    key_length: usize
+    key_lengths: Vec<usize>
 }
 
 impl Config {
@@ -62,6 +62,10 @@ impl Config {
 }
 
 // Functions
+fn pause() {
+    let _ = stdin().read(&mut [0; 1]);
+}
+
 fn timestamp() -> String {
     let now = Local::now();
     return now.format("%H:%M:%S").to_string();
@@ -219,18 +223,18 @@ async fn redeem_keys(keys: Vec<String>) {
     }
 }
 
-fn get_potential_keys(text: &str, key_length: usize) -> Vec<String> {
+fn get_potential_keys(text: &str, key_lengths: &Vec<usize>) -> Vec<String> {
     let regex = Regex::new(r"[^a-zA-Z0-9]").unwrap();
 
     return text
         .split_whitespace()
         .filter(|word| !word.starts_with("https:") && !word.starts_with("http:"))
         .map(|word| regex.replace_all(word, "").to_string())
-        .filter(|word| word.len() == key_length)
+        .filter(|word| key_lengths.contains(&word.len()))
         .collect();
 }
 
-async fn handle_attachment(key_length: usize, attachment: Attachment) {
+async fn handle_attachment(key_lengths: &Vec<usize>, attachment: Attachment) {
     let response = match reqwest::get(attachment.url).await {
         Ok(response) => response,
         Err(_) => return
@@ -254,7 +258,7 @@ async fn handle_attachment(key_length: usize, attachment: Attachment) {
         Err(_) => return
     };
 
-    let keys = get_potential_keys(&text, key_length);
+    let keys = get_potential_keys(&text, key_lengths);
     
     for key in keys {        
         spawn(async move {
@@ -265,7 +269,8 @@ async fn handle_attachment(key_length: usize, attachment: Attachment) {
 
 async fn handle_message(config: &Config, message: Message, guild_id: i64) {
     if config.server_ids.contains(&guild_id) {
-        let keys = get_potential_keys(&message.content, config.key_length);
+        let key_lengths = &config.key_lengths;
+        let keys = get_potential_keys(&message.content, key_lengths);
         
         for key in keys {
             spawn(async move {
@@ -273,11 +278,11 @@ async fn handle_message(config: &Config, message: Message, guild_id: i64) {
             });
         }
 
-        let key_length = config.key_length;
-
         for attachment in message.attachments {
+            let cloned_config = config.clone();
+
             spawn(async move {
-                handle_attachment(key_length, attachment).await;
+                handle_attachment(&cloned_config.key_lengths, attachment).await;
             });
         }
     }
@@ -315,7 +320,7 @@ async fn main() {
         Ok(config) => config,
         Err(error) => {
             println!("{} Failed to Read Config: {}", "[ERROR]".red(), format!("{:?}", error).bold());
-            return;
+            return pause();
         }
     };
 
@@ -343,6 +348,8 @@ async fn main() {
         .event_handler(handler)
         .await
         .expect(&format!("{} Failed to Create Client.", "[ERROR]".red()));
+
+    println!("{} Starting Client", format!("[{}, SNIPER]", timestamp()).green());
 
     if let Err(error) = client.start().await {
         println!("{} Failed to Start Client: {}", "[ERROR]".red(), format!("{:?}", error).bold());
