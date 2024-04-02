@@ -47,7 +47,8 @@ struct Config {
     discord_token: String,
     krampus_credentials: Credentials,
     server_ids: Vec<i64>,
-    key_lengths: Vec<usize>
+    key_lengths: Vec<usize>,
+    snipe_images: bool
 }
 
 impl Config {
@@ -278,12 +279,14 @@ async fn handle_message(config: &Config, message: Message, guild_id: i64) {
             });
         }
 
-        for attachment in message.attachments {
-            let cloned_config = config.clone();
+        if config.snipe_images {
+            for attachment in message.attachments {
+                let cloned_config = config.clone();
 
-            spawn(async move {
-                handle_attachment(&cloned_config.key_lengths, attachment).await;
-            });
+                spawn(async move {
+                    handle_attachment(&cloned_config.key_lengths, attachment).await;
+                });
+            }
         }
     }
 }
