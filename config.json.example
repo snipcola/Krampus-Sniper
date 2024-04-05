@@ -6,5 +6,6 @@
     },
     "server_ids": [123456789],
     "key_lengths": [10, 20],
-    "snipe_images": false
+    "snipe_images": false,
+    "strict": true
 }

@@ -4,7 +4,10 @@
 #![allow(non_snake_case, non_upper_case_globals)]
 
 // Program
-use colored::{Colorize, control};
+#[cfg(target_os = "windows")]
+use colored::control;
+
+use colored::Colorize;
 use chrono::Local;
 
 use tokio::{spawn, time::sleep};
@@ -48,7 +51,8 @@ struct Config {
     krampus_credentials: Credentials,
     server_ids: Vec<i64>,
     key_lengths: Vec<usize>,
-    snipe_images: bool
+    snipe_images: bool,
+    strict: bool
 }
 
 impl Config {
@@ -224,18 +228,27 @@ async fn redeem_keys(keys: Vec<String>) {
     }
 }
 
-fn get_potential_keys(text: &str, key_lengths: &Vec<usize>) -> Vec<String> {
+fn get_potential_keys(text: &str, key_lengths: &Vec<usize>, strict: bool) -> Vec<String> {
     let regex = Regex::new(r"[^a-zA-Z0-9]").unwrap();
 
     return text
         .split_whitespace()
-        .filter(|word| !word.starts_with("https:") && !word.starts_with("http:"))
         .map(|word| regex.replace_all(word, "").to_string())
-        .filter(|word| key_lengths.contains(&word.len()))
+        .filter(|word| {
+            let correct_length = key_lengths.contains(&word.len());
+
+            if strict {
+                let has_alphabet = word.chars().any(char::is_alphabetic);
+                let has_numbers = word.chars().any(char::is_numeric);
+                return correct_length && has_alphabet && has_numbers;
+            } else {
+                return correct_length;
+            }
+        })
         .collect();
 }
 
-async fn handle_attachment(key_lengths: &Vec<usize>, attachment: Attachment) {
+async fn handle_attachment(attachment: Attachment, key_lengths: &Vec<usize>, strict: bool) {
     let response = match reqwest::get(attachment.url).await {
         Ok(response) => response,
         Err(_) => return
@@ -259,7 +272,7 @@ async fn handle_attachment(key_lengths: &Vec<usize>, attachment: Attachment) {
         Err(_) => return
     };
 
-    let keys = get_potential_keys(&text, key_lengths);
+    let keys = get_potential_keys(&text, key_lengths, strict);
     
     for key in keys {        
         spawn(async move {
@@ -271,7 +284,7 @@ async fn handle_attachment(key_lengths: &Vec<usize>, attachment: Attachment) {
 async fn handle_message(config: &Config, message: Message, guild_id: i64) {
     if config.server_ids.contains(&guild_id) {
         let key_lengths = &config.key_lengths;
-        let keys = get_potential_keys(&message.content, key_lengths);
+        let keys = get_potential_keys(&message.content, key_lengths, config.strict);
         
         for key in keys {
             spawn(async move {
@@ -284,7 +297,7 @@ async fn handle_message(config: &Config, message: Message, guild_id: i64) {
                 let cloned_config = config.clone();
 
                 spawn(async move {
-                    handle_attachment(&cloned_config.key_lengths, attachment).await;
+                    handle_attachment(attachment, &cloned_config.key_lengths, cloned_config.strict).await;
                 });
             }
         }
@@ -317,6 +330,7 @@ impl EventHandler for Handler {
 // Main
 #[tokio::main]
 async fn main() {
+    #[cfg(target_os = "windows")]
     control::set_virtual_terminal(true).ok();
 
     let config = match Config::from_file("config.json") {
