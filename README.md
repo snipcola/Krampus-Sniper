@@ -1,3 +1,6 @@
+> **Note**</br> 
+> Due to recent changes to how acedia.gg works, this no longer works - don't expect any updates.
+
 ## Krampus Key Sniper
 ### Notice
 This was created as a proof-of-concept, your usage is your own responsibility. The following instructions are vague on purpose, to minimize the chances of this tool being misused.
